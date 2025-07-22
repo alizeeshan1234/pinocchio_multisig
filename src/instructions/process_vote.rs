@@ -252,6 +252,7 @@ mod testing_process_vote_instruction {
             instruction::AccountMeta,
             pubkey,
             instruction::Instruction,
+            program_error::ProgramError,
         }
     };
 
@@ -425,4 +426,139 @@ mod testing_process_vote_instruction {
         println!("INSTRUCTION PROCESSING COMPLETE");
         println!("TEST COMPLETE");
     }
+
+    #[test]
+    fn test_vote_instruction_wrong_program_owner() {
+        println!("Testing: Wrong Program Owner");
+        println!("This test verifies that the contract rejects multisig accounts not owned by the correct program");
+        
+        let mollusk = Mollusk::new(&ID, "target/deploy/pinocchio_multisig");
+        let proposal_id = 12345u64;
+        
+        let (proposal_state_pda, proposal_bump) = Pubkey::find_program_address(
+            &[b"proposal", MULTISIG.as_ref(), &proposal_id.to_le_bytes()],
+            &ID,
+        );
+        println!("Proposal PDA: {}, Bump: {}", proposal_state_pda, proposal_bump);
+
+        let (vote_state_pda, vote_bump) = Pubkey::find_program_address(
+            &[b"vote_state", MULTISIG.as_ref(), &proposal_id.to_le_bytes(), &[proposal_bump]],
+            &ID,
+        );
+        println!("Vote State PDA: {}, Bump: {}", vote_state_pda, vote_bump);
+
+        let (multisig_config_pda, _config_bump) = Pubkey::find_program_address(
+            &[b"multisig_config", MULTISIG.as_ref()],
+            &ID,
+        );
+        println!("Multisig Config PDA: {}", multisig_config_pda);
+
+        let (system_program_id, system_account) = program::keyed_account_for_system_program();
+
+        let user_account = Account::new(1 * LAMPORTS_PER_SOL, 0, &system_program_id);
+        println!("User Account - Pubkey: {}, Lamports: {}", USER, user_account.lamports);
+
+        let mut multisig_data = vec![0u8; Multisig::LEN];
+        multisig_data[0] = 2;
+        multisig_data[1..33].copy_from_slice(USER.as_ref());
+        let dummy_member = Pubkey::new_unique();
+        multisig_data[33..65].copy_from_slice(dummy_member.as_ref()); 
+        
+        let wrong_owner = Pubkey::new_unique(); 
+        let multisig_account = Account::new_data(
+            1 * LAMPORTS_PER_SOL, 
+            &multisig_data, 
+            &wrong_owner // This should be &ID, but we're using wrong_owner to test failure
+        ).unwrap();
+        
+        println!("Multisig Account - Expected Owner: {}, Actual Owner: {}", ID, wrong_owner);
+        println!("Multisig Account - Pubkey: {}, Lamports: {}", MULTISIG, multisig_account.lamports);
+        println!("Multisig Members: {} (count: {})", USER, multisig_data[0]);
+        
+        // Create valid proposal account (owned by correct program)
+        let mut proposal_data = vec![0u8; ProposalState::LEN];
+        proposal_data[0..8].copy_from_slice(&proposal_id.to_le_bytes()); // proposal_id
+        proposal_data[8] = 0; // status = Active (ProposalStatus::Active)
+        let future_time = 9999999999u64; // Far future expiry
+        proposal_data[16..24].copy_from_slice(&future_time.to_le_bytes());
+        
+        // Set active members - USER is an active member
+        let active_members_offset = 50; 
+        proposal_data[active_members_offset..active_members_offset + 32]
+            .copy_from_slice(USER.as_ref());
+            
+        let proposal_state_account = Account::new_data(
+            1 * LAMPORTS_PER_SOL,
+            &proposal_data,
+            &ID, // Correctly owned by our program
+        ).unwrap();
+        
+        println!("Proposal Account - Owner: {}, Proposal ID: {}", proposal_state_account.owner, proposal_id);
+        
+        // Create empty vote state account (will be created during instruction)
+        let vote_state_account = Account::new(0, 0, &system_program_id);
+        println!("Vote State Account - Initial Owner: {}, Lamports: {}", vote_state_account.owner, vote_state_account.lamports);
+
+        // Create valid multisig config account
+        let mut multisig_config_data = vec![0u8; MultisigConfig::LEN];
+        multisig_config_data[0..8].copy_from_slice(&1u64.to_le_bytes()); // min_threshold = 1
+        let multisig_config_account = Account::new_data(
+            1 * LAMPORTS_PER_SOL,
+            &multisig_config_data,
+            &ID, // Correctly owned by our program
+        ).unwrap();
+        
+        println!("Multisig Config Account - Owner: {}, Threshold: {}", multisig_config_account.owner, 1);
+
+        // Set up instruction accounts
+        let ix_accounts = vec![
+            AccountMeta::new(USER, true),                    // voter (signer) - MUST BE SIGNER
+            AccountMeta::new(MULTISIG, false),               // multisig (WRONG OWNER - should fail)
+            AccountMeta::new(proposal_state_pda, false),     // proposal_state
+            AccountMeta::new(vote_state_pda, false),         // vote_state
+            AccountMeta::new(multisig_config_pda, false),    // multisig_config
+            AccountMeta::new_readonly(system_program_id, false), // system_program
+        ];
+
+        // Create instruction data
+        let mut data = vec![1u8]; // Instruction discriminator for vote
+        data.extend_from_slice(&proposal_id.to_le_bytes()); // proposal_id (8 bytes)
+        data.push(1); // vote_choice = 1 (For)
+        data.push(proposal_bump); // bump for PDA derivation
+
+        println!("Instruction Data:");
+        println!("  - Discriminator: {}", data[0]);
+        println!("  - Proposal ID: {}", proposal_id);
+        println!("  - Vote Choice: {} (1=For)", data[9]);
+        println!("  - Bump: {}", data[10]);
+        println!("  - Total Data Length: {}", data.len());
+
+        // Create the instruction
+        let instruction = Instruction::new_with_bytes(ID, &data, ix_accounts);
+
+        // Prepare transaction accounts
+        let tx_accounts = vec![
+            (USER, user_account),
+            (MULTISIG, multisig_account),                    // This account has WRONG OWNER
+            (proposal_state_pda, proposal_state_account),
+            (vote_state_pda, vote_state_account),
+            (multisig_config_pda, multisig_config_account),
+            (system_program_id, system_account),
+        ];
+
+        println!("Processing instruction - expecting failure due to wrong multisig owner...");
+        
+        // Process and validate the instruction - should fail with IncorrectProgramId
+        mollusk.process_and_validate_instruction(
+            &instruction,
+            &tx_accounts,
+            &[Check::err(ProgramError::IncorrectProgramId)],
+        );
+
+        println!("✓ TEST PASSED: Contract correctly rejected multisig account with wrong owner");
+        println!("✓ Expected Error: ProgramError::IncorrectProgramId");
+        println!("✓ This confirms the security check: 'if multisig.owner() != &crate::ID' works correctly");
+        println!("=== Test Complete ===");
+    }
+
 }
