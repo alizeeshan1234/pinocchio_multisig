@@ -1,6 +1,8 @@
 pub mod init_multisig;
-
 pub use init_multisig::*;
+
+pub mod process_vote;
+pub use process_vote::*;
 
 use pinocchio::program_error::ProgramError;
 

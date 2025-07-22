@@ -14,7 +14,7 @@ pub struct ProposalState {
     //VOTE 1 - FOR
     //VOTE 2 - AGAINST
     //VOTE 3 - ABSTAIN
-    pub votes:[u8; 10],
+    pub votes:[u8; 10], //[0,3,2,1,3,0,0,0,2,1....]
 
     // imo slot
     pub created_time: u64,
@@ -35,6 +35,7 @@ impl ProposalState {
         Ok(Self::from_account_info_unchecked(account_info))
     }
 }
+
 #[repr(u8)]
 pub enum ProposalStatus {
     Draft = 0,

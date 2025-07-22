@@ -15,11 +15,13 @@ crate-type = ["cdylib", "lib"]
 # pinocchio-log = "0.4.0"
 # pinocchio-pubkey = "0.2.4"
 [dependencies]
+mollusk-svm = "0.4.1"
 pinocchio = { git = "https://github.com/anza-xyz/pinocchio.git" }
 pinocchio-log = { git = "https://github.com/anza-xyz/pinocchio.git" }
 pinocchio-pubkey = { git = "https://github.com/anza-xyz/pinocchio.git" }
 pinocchio-system = { git = "https://github.com/anza-xyz/pinocchio.git" }
 shank = "0.4.2"
+solana-sdk = "2.3.1"
 
 [features]
 default = []

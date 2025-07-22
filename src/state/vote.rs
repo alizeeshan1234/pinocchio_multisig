@@ -8,6 +8,7 @@ pub struct VoteState {
     pub has_permission: bool, // Indicates if the account has permission to vote
     pub vote_count: u64, // proposal counter
     pub bump: u8, // Bump seed for PDA   
+    pub votes: [u8; 10], // Array to hold votes, adjust size as needed
 }
 
 impl VoteState {
