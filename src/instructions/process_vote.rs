@@ -17,6 +17,42 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    if !voter.is_signer() {
+        log!("Error: Voter account must be a signer");
+        return Err(ProgramError::MissingRequiredSignature);
+    };
+
+    if multisig.owner() != &crate::ID {
+        log!("Error: Multisig account not owned by program. Owner: {}", multisig.owner());
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    if !multisig.is_writable() {
+        log!("Error: Multisig account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if proposal_state.owner() != &crate::ID {
+        log!("Error: Proposal state account not owned by program. Owner: {}", proposal_state.owner());
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    if !proposal_state.is_writable() {
+        log!("Error: Proposal state account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if !vote_state.is_writable() {
+        log!("Error: Vote state account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if multisig_config.owner() != &crate::ID {
+        log!("Error: Multisig config account not owned by program. Owner: {}", multisig_config.owner());
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+
     if data.len() < 10 {
         return Err(ProgramError::InvalidInstructionData);
     };
@@ -131,6 +167,7 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         vote_state_data.has_permission = true;
         vote_state_data.vote_count = 1;
         vote_state_data.bump = bump;
+
     } else {
         // Update existing vote state
         let vote_state_data = VoteState::from_account_info(vote_state)?;
@@ -201,7 +238,7 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
 }
 
 // -------------------------- TESTING -----------------------------
-        
+
 #[cfg(test)]
 mod testing_process_vote_instruction {
     use solana_sdk::native_token::LAMPORTS_PER_SOL;
