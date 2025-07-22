@@ -200,6 +200,8 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
     Ok(())
 }
 
+// -------------------------- TESTING -----------------------------
+        
 #[cfg(test)]
 mod testing_process_vote_instruction {
     use solana_sdk::native_token::LAMPORTS_PER_SOL;
