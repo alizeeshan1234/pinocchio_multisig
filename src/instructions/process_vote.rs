@@ -2,7 +2,7 @@ use pinocchio::{
     account_info::AccountInfo,
     program_error::ProgramError,
     pubkey::{self},
-    sysvars::{clock::{self, Clock}, Sysvar, rent::Rent},
+    sysvars::{clock::Clock, Sysvar, rent::Rent},
     ProgramResult,
 };
 
@@ -13,6 +13,11 @@ use pinocchio_system::instructions::CreateAccount;
 use crate::state::{Multisig, MultisigConfig, ProposalState, ProposalStatus, VoteState};
 
 pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+
+    if data.len() < 10 {
+        return Err(ProgramError::InvalidInstructionData);
+    };
+
     let [voter, multisig, proposal_state, vote_state, multisig_config, _remaining @ ..] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -22,40 +27,14 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         return Err(ProgramError::MissingRequiredSignature);
     };
 
-    if multisig.owner() != &crate::ID {
-        log!("Error: Multisig account not owned by program. Owner: {}", multisig.owner());
-        return Err(ProgramError::IncorrectProgramId);
+    let writable_accounts = [multisig, proposal_state, vote_state];
+
+    for accounts in writable_accounts {
+        if !accounts.is_writable() {
+            log!("Error: Account {} must be writable", accounts.key());
+            return Err(ProgramError::InvalidAccountData);
+        }
     }
-
-    if !multisig.is_writable() {
-        log!("Error: Multisig account must be writable");
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    if proposal_state.owner() != &crate::ID {
-        log!("Error: Proposal state account not owned by program. Owner: {}", proposal_state.owner());
-        return Err(ProgramError::IncorrectProgramId);
-    }
-
-    if !proposal_state.is_writable() {
-        log!("Error: Proposal state account must be writable");
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    if !vote_state.is_writable() {
-        log!("Error: Vote state account must be writable");
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    if multisig_config.owner() != &crate::ID {
-        log!("Error: Multisig config account not owned by program. Owner: {}", multisig_config.owner());
-        return Err(ProgramError::IncorrectProgramId);
-    }
-
-
-    if data.len() < 10 {
-        return Err(ProgramError::InvalidInstructionData);
-    };
 
     let proposal_id = unsafe { *(data.as_ptr() as *const u64) };
 
@@ -67,28 +46,33 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidInstructionData);
     };
 
-    // Verify multisig account
-    if multisig.owner() != &crate::ID {
-        return Err(ProgramError::IncorrectProgramId);
-    };
-
-    // Load multisig data
-    let multisig_data = Multisig::from_account_info(multisig)?;
-
-    // Check if voter is a member of the multisig
-    let mut voter_index = None;
-    for (i, member) in multisig_data.members.iter().enumerate() {
-        if 1 >= multisig_data.num_members {
-            break;
-        }
-        if member == voter.key() {
-            voter_index = Some(i);
-            break;
+    let program_owned_accounts = [multisig, proposal_state, multisig_config];
+    for accounts in program_owned_accounts {
+        if accounts.owner() != &crate::ID {
+            return Err(ProgramError::IncorrectProgramId);
         }
     }
 
-    let voter_index = voter_index.ok_or(ProgramError::InvalidAccountData)?;
-    log!("Voter found at index: {}", voter_index);
+    // Load account data
+    let multisig_data = Multisig::from_account_info(multisig)?;
+    let proposal_data = ProposalState::from_account_info(proposal_state)?;
+    let multisig_config_data = MultisigConfig::from_account_info(multisig_config)?;
+
+    // Check if voter is a member of the multisig
+    // let mut voter_index = None;
+    // for i in 0..multisig_data.num_members as usize {
+    //    if multisig_data.members[i] == *voter.key() {
+    //         voter_index = Some(i);
+    //         break;
+    //    }
+    // };
+
+    // let voter_index = voter_index.ok_or(ProgramError::InvalidAccountData)?;
+    // log!("Voter found at index: {}", voter_index);
+
+    let voter_index = (0..multisig_data.num_members as usize)
+        .find(|&i| multisig_data.members[i] == *voter.key())
+        .ok_or(ProgramError::InvalidAccountData)?;
 
     let proposal_seed = [
         b"proposal",
@@ -102,8 +86,6 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
     if &proposal_pda != proposal_state.key() {
         return Err(ProgramError::InvalidAccountData);
     }
-
-    let proposal_data = ProposalState::from_account_info(proposal_state)?;
 
     if proposal_data.proposal_id != proposal_id {
         return Err(ProgramError::InvalidAccountData);
@@ -122,45 +104,35 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidAccountData);
     };
 
-    let mut is_active_member = false;
-    for active_member in &proposal_data.active_members {
-        if active_member == voter.key() {
-            is_active_member = true;
-            break;
-        };
-    };
-
-    if !is_active_member {
-        log!("Voter is not an active member of the proposal");
+    if !proposal_data.active_members.contains(voter.key()) {
         return Err(ProgramError::InvalidAccountData);
-    };
+    }
 
-    let minimum_balance = Rent::get()?.minimum_balance(VoteState::LEN);
-    let vote_state_space = VoteState::LEN as u64;
 
     let (vote_state_pda, _bump) = pubkey::find_program_address(
         &[b"vote_state", multisig.key().as_ref(), &proposal_id.to_le_bytes(), &[bump]],
         &crate::ID,
     );
 
-    if &vote_state_pda != vote_state.key() {
+    if vote_state_pda != *vote_state.key() {
         return Err(ProgramError::InvalidAccountData);
     }
 
     // Handle vote state account creation or update
     if vote_state.owner() != &crate::ID {
+        let minimum_balance = Rent::get()?.minimum_balance(VoteState::LEN);
+        let vote_state_space = VoteState::LEN as u64;
+
         // Create vote state account if it doesn't exist
         log!("Creating VoteState Account");
 
-        let vote_account = CreateAccount {
+        CreateAccount {
             from: voter,
             to: vote_state,
             lamports: minimum_balance,
             space: vote_state_space,
             owner: &crate::ID,
-        };
-
-        vote_account.invoke()?;
+        }.invoke()?;
 
         // Initialize vote state
         let vote_state_data = VoteState::from_account_info(vote_state)?;
@@ -185,10 +157,8 @@ pub fn process_vote_instruction(accounts: &[AccountInfo], data: &[u8]) -> Progra
         vote_state_data.vote_count += 1;
     }
 
-    let proposal_data = ProposalState::from_account_info(proposal_state)?;
     proposal_data.votes[voter_index] = vote_choice;
 
-    let multisig_config_data = MultisigConfig::from_account_info(multisig_config)?;
     let mut for_votes = 0;
     let mut against_votes = 0;
     let mut abstain_votes = 0;
@@ -273,12 +243,14 @@ mod testing_process_vote_instruction {
             &[b"proposal", MULTISIG.as_ref(), &proposal_id.to_le_bytes()],
             &ID,
         );
+
         println!("Proposal PDA: {}, Bump: {}", proposal_state_pda, proposal_bump);
 
         let (vote_state_pda, vote_bump) = Pubkey::find_program_address(
             &[b"vote_state", MULTISIG.as_ref(), &proposal_id.to_le_bytes(), &[proposal_bump]],
             &ID,
         );
+
         println!("Vote State PDA: {}, Bump: {}", vote_state_pda, vote_bump);
 
         let (multisig_config_pda, _config_bump) = Pubkey::find_program_address(
@@ -313,20 +285,12 @@ mod testing_process_vote_instruction {
         println!("Multisig lamports: {}", multisig_account.lamports);
         println!("Multisig data length: {}", multisig_account.data.len());
         println!("Number of members: {}", multisig_data[0]);
-        
-        for i in 0..2 {
-            let start_idx = 1 + (i * 32);
-            let end_idx = start_idx + 32;
-            let member_bytes = &multisig_data[start_idx..end_idx];
-            let member_pubkey = Pubkey::try_from(member_bytes).unwrap();
-            println!("Member {}: {}", i, member_pubkey);
-        }
 
         let mut proposal_data = vec![0u8; ProposalState::LEN];
         proposal_data[0..8].copy_from_slice(&proposal_id.to_le_bytes()); 
         proposal_data[8] = 0; 
         
-        let future_time = 9999999999u64;
+        let future_time: u64 = 9999999999;
         proposal_data[16..24].copy_from_slice(&future_time.to_le_bytes());
         
         let active_members_offset = 50; 
@@ -539,7 +503,7 @@ mod testing_process_vote_instruction {
         // Prepare transaction accounts
         let tx_accounts = vec![
             (USER, user_account),
-            (MULTISIG, multisig_account),                    // This account has WRONG OWNER
+            (MULTISIG, multisig_account), // This account has WRONG OWNER
             (proposal_state_pda, proposal_state_account),
             (vote_state_pda, vote_state_account),
             (multisig_config_pda, multisig_config_account),
@@ -555,10 +519,110 @@ mod testing_process_vote_instruction {
             &[Check::err(ProgramError::IncorrectProgramId)],
         );
 
-        println!("✓ TEST PASSED: Contract correctly rejected multisig account with wrong owner");
-        println!("✓ Expected Error: ProgramError::IncorrectProgramId");
-        println!("✓ This confirms the security check: 'if multisig.owner() != &crate::ID' works correctly");
-        println!("=== Test Complete ===");
+        println!("Testing Completed!");
     }
+
+   #[test]
+    fn test_duplicate_vote_prevention() {
+        println!("Testing: Duplicate Vote Prevention");
+
+        let mollusk = Mollusk::new(&ID, "target/deploy/pinocchio_multisig");
+        let proposal_id = 12345u64;
+
+        // Derive PDAs
+        let (proposal_state_pda, proposal_bump) = Pubkey::find_program_address(
+            &[b"proposal", MULTISIG.as_ref(), &proposal_id.to_le_bytes()],
+            &ID,
+        );
+        let (vote_state_pda, _) = Pubkey::find_program_address(
+            &[b"vote_state", MULTISIG.as_ref(), &proposal_id.to_le_bytes(), &[proposal_bump]],
+            &ID,
+        );
+        let (multisig_config_pda, _) = Pubkey::find_program_address(
+            &[b"multisig_config", MULTISIG.as_ref()],
+            &ID,
+        );
+
+        let (system_program_id, system_account) = program::keyed_account_for_system_program();
+        // Setup accounts
+        let user_account = Account::new(1 * LAMPORTS_PER_SOL, 0, &system_program_id);
+
+        let multisig_data = {
+            let mut data = vec![0u8; Multisig::LEN];
+            data[0] = 2; // member count
+            data[1..33].copy_from_slice(USER.as_ref());
+            data
+        };
+        let multisig_account = Account::new_data(1 * LAMPORTS_PER_SOL, &multisig_data, &ID).unwrap();
+
+        let proposal_data = {
+            let mut data = vec![0u8; ProposalState::LEN];
+            data[0..8].copy_from_slice(&proposal_id.to_le_bytes()); // ID
+            data[8] = 0; // Active
+            data[16..24].copy_from_slice(&9999999999u64.to_le_bytes()); // deadline
+            data[24] = 1; // USER already voted
+            let member_offset = 50;
+            data[member_offset..member_offset + 32].copy_from_slice(USER.as_ref()); // member
+            data
+        };
+
+        let proposal_state_account = Account::new_data(1 * LAMPORTS_PER_SOL, &proposal_data, &ID).unwrap();
+
+        let vote_state_data = {
+            let mut data = vec![0u8; VoteState::LEN];
+            data[0] = 1; // has_permission
+            data[8..16].copy_from_slice(&1u64.to_le_bytes()); // vote count
+            data[16] = proposal_bump; // bump
+            data[17] = 1; // USER already voted
+            data
+        };
+
+        let vote_state_account = Account::new_data(1 * LAMPORTS_PER_SOL, &vote_state_data, &ID).unwrap();
+
+        let config_data = {
+            let mut data = vec![0u8; MultisigConfig::LEN];
+            data[0..8].copy_from_slice(&1u64.to_le_bytes()); // threshold = 1
+            data
+        };
+        let config_account = Account::new_data(1 * LAMPORTS_PER_SOL, &config_data, &ID).unwrap();
+
+        // Attempt second vote (should fail)
+        let instruction = Instruction::new_with_bytes(
+            ID,
+            &[
+                1, // vote instruction
+                proposal_id as u8,
+                2, // vote choice: Against
+                proposal_bump,
+            ],
+            vec![
+                AccountMeta::new(USER, true),
+                AccountMeta::new(MULTISIG, false),
+                AccountMeta::new(proposal_state_pda, false),
+                AccountMeta::new(vote_state_pda, false),
+                AccountMeta::new(multisig_config_pda, false),
+                AccountMeta::new_readonly(system_program_id, false),
+            ],
+        );
+
+        let tx_accounts = vec![
+            (USER, user_account),
+            (MULTISIG, multisig_account),
+            (proposal_state_pda, proposal_state_account),
+            (vote_state_pda, vote_state_account),
+            (multisig_config_pda, config_account),
+            (system_program_id, Account::default()),
+        ];
+
+        println!("Attempting second vote should fail...");
+
+        mollusk.process_and_validate_instruction(
+            &instruction,
+            &tx_accounts,
+            &[Check::err(ProgramError::InvalidAccountData)],
+        );
+
+        println!("✓ Test passed: Duplicate vote correctly prevented.");
+}
 
 }

@@ -8,12 +8,6 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "lib"]
 
-# [dependencies]
-# pinocchio = "0.8.1"
-# pinocchio-system = "0.2.0"
-# pinocchio-token = "0.3.0"
-# pinocchio-log = "0.4.0"
-# pinocchio-pubkey = "0.2.4"
 [dependencies]
 mollusk-svm = "0.4.1"
 pinocchio = { git = "https://github.com/anza-xyz/pinocchio.git" }
